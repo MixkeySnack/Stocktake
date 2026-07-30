@@ -26,9 +26,11 @@ function codeFromCell(text) {
   return m ? m[1].toUpperCase() : null;
 }
 
-// Reads column A of one tab and returns { [itemCode]: { row, qty } }
+// Reads columns A and B of one tab and returns { [itemCode]: { row, qty } }
+// Column B (Quantity) is treated as authoritative when it holds a number;
+// otherwise falls back to the number embedded in column A's "= N Unit" text.
 async function readTabRows(sheets, spreadsheetId, tabName) {
-  const range = `'${tabName}'!A1:A500`;
+  const range = `'${tabName}'!A1:B500`;
   const res = await sheets.spreadsheets.values.get({ spreadsheetId, range });
   const rows = res.data.values || [];
   const byCode = {};
@@ -36,10 +38,13 @@ async function readTabRows(sheets, spreadsheetId, tabName) {
     const text = row[0] || '';
     const code = codeFromCell(text);
     if (!code) return;
-    const qtyMatch = String(text).match(/=\s*([\d.]+)/);
+    const bVal = row[1];
+    const bNum = bVal !== undefined && bVal !== '' && !isNaN(parseFloat(bVal)) ? parseFloat(bVal) : null;
+    const aMatch = String(text).match(/=\s*([\d.]+)/);
+    const aNum = aMatch ? parseFloat(aMatch[1]) : 0;
     byCode[code] = {
       row: idx + 1, // 1-indexed sheet row
-      qty: qtyMatch ? parseFloat(qtyMatch[1]) : 0,
+      qty: bNum !== null ? bNum : aNum,
     };
   });
   return byCode;
