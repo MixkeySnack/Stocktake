@@ -20,8 +20,11 @@
   .loc-switch, .tab-switch { display: flex; gap: 4px; background: var(--surface); border: 1px solid var(--line); border-radius: 999px; padding: 3px; width: fit-content; }
   .loc-btn, .tab-btn { border: none; background: none; padding: 7px 18px; border-radius: 999px; font-family: 'IBM Plex Mono'; font-size: 13px; font-weight: 600; cursor: pointer; color: var(--ink-soft); }
   .loc-btn.active, .tab-btn.active { background: var(--coffee); color: #fff; }
-  .status-bar { font-size: 12px; color: var(--ink-soft); margin-bottom: 16px; }
+  .status-bar { font-size: 12px; color: var(--ink-soft); }
   .status-bar.error { color: var(--alert); }
+  .status-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 16px; }
+  .refresh-btn { background: none; border: 1px solid var(--line); color: var(--ink-soft); font-size: 11.5px; padding: 5px 12px; border-radius: 999px; cursor: pointer; font-family: 'Work Sans'; flex-shrink: 0; }
+  .refresh-btn:hover { border-color: var(--coffee); color: var(--coffee-dark); }
   .section-title { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--coffee-dark); margin: 24px 0 10px; }
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 14px; }
   .card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 16px; }
@@ -71,7 +74,10 @@
         <button class="tab-btn" id="tabUsage" onclick="switchView('usage')">การใช้ประจำวัน</button>
       </div>
     </div>
-    <div id="statusBar" class="status-bar">กำลังโหลด…</div>
+    <div class="status-row">
+      <div id="statusBar" class="status-bar">กำลังโหลด…</div>
+      <button class="refresh-btn" onclick="manualRefresh()">↻ รีเฟรชตอนนี้</button>
+    </div>
     <div id="app"></div>
   </div>
 
@@ -292,10 +298,30 @@
     appEl.innerHTML = currentView === 'usage' ? renderUsageView() : renderStockView();
   }
 
+  window.manualRefresh = async function () {
+    setStatus('กำลังรีเฟรช…');
+    await loadStock();
+    if (currentView === 'usage') await loadUsageLog();
+    setStatus('ข้อมูลล่าสุดจาก Google Sheet (รีเฟรชแล้ว)');
+    render();
+  };
+
+  function startAutoPolling() {
+    setInterval(async () => {
+      const active = document.activeElement;
+      const isTyping = active && active.classList && (active.classList.contains('amt') || active.classList.contains('usage-input'));
+      if (isTyping) return; // don't yank focus/values while someone is mid-entry
+      await loadStock();
+      if (currentView === 'usage') await loadUsageLog();
+      render();
+    }, 15000);
+  }
+
   (async function init() {
     await loadConfig();
     await loadStock();
     render();
+    startAutoPolling();
   })();
 </script>
 </body>

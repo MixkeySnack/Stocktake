@@ -84,4 +84,82 @@ async function updateItemQty(spreadsheetId, location, itemId, qty) {
   return { row: entry.row };
 }
 
-module.exports = { readAllStock, updateItemQty };
+const USAGE_LOG_SHEET = 'UsageLog';
+const USAGE_LOG_HEADERS = ['Location', 'Date', 'ItemId', 'ItemName', 'QtyUsed', 'Unit', 'Timestamp'];
+
+async function ensureUsageLogSheet(sheets, spreadsheetId) {
+  const meta = await sheets.spreadsheets.get({ spreadsheetId });
+  const exists = (meta.data.sheets || []).some(s => s.properties.title === USAGE_LOG_SHEET);
+  if (!exists) {
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId,
+      requestBody: { requests: [{ addSheet: { properties: { title: USAGE_LOG_SHEET } } }] },
+    });
+    await sheets.spreadsheets.values.update({
+      spreadsheetId,
+      range: `'${USAGE_LOG_SHEET}'!A1:G1`,
+      valueInputOption: 'RAW',
+      requestBody: { values: [USAGE_LOG_HEADERS] },
+    });
+  }
+}
+
+// Subtracts `qty` from an item's current stock and appends one row to the UsageLog tab.
+// Returns the item's new quantity.
+async function consumeItem(spreadsheetId, location, itemId, date, qtyUsed) {
+  const sheets = await getSheetsClient();
+  const byCode = await readTabRows(sheets, spreadsheetId, location);
+  const entry = byCode[itemId.toUpperCase()];
+  if (!entry) {
+    throw new Error(`Item ${itemId} not found in sheet tab "${location}"`);
+  }
+  const item = flatItems().find(i => i.id.toUpperCase() === itemId.toUpperCase());
+  const name = item ? item.name : itemId;
+  const unit = item ? item.unit : '';
+  const newQty = Math.max(0, Math.round((entry.qty - qtyUsed) * 100) / 100);
+
+  const cellText = `${itemId} : ${name} = ${newQty} ${unit}`;
+  await sheets.spreadsheets.values.batchUpdate({
+    spreadsheetId,
+    requestBody: {
+      valueInputOption: 'RAW',
+      data: [
+        { range: `'${location}'!A${entry.row}`, values: [[cellText]] },
+        { range: `'${location}'!B${entry.row}`, values: [[newQty]] },
+      ],
+    },
+  });
+
+  await ensureUsageLogSheet(sheets, spreadsheetId);
+  await sheets.spreadsheets.values.append({
+    spreadsheetId,
+    range: `'${USAGE_LOG_SHEET}'!A1`,
+    valueInputOption: 'RAW',
+    insertDataOption: 'INSERT_ROWS',
+    requestBody: {
+      values: [[location, date, itemId, name, qtyUsed, unit, new Date().toISOString()]],
+    },
+  });
+
+  return newQty;
+}
+
+// Returns usage log rows for one location, most recent first.
+async function readUsageLog(spreadsheetId, location) {
+  const sheets = await getSheetsClient();
+  await ensureUsageLogSheet(sheets, spreadsheetId);
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: `'${USAGE_LOG_SHEET}'!A2:G5000`,
+  });
+  const rows = res.data.values || [];
+  return rows
+    .filter(r => r[0] === location)
+    .map(r => ({
+      location: r[0], date: r[1], itemId: r[2], itemName: r[3],
+      qtyUsed: parseFloat(r[4]) || 0, unit: r[5], timestamp: r[6],
+    }))
+    .reverse();
+}
+
+module.exports = { readAllStock, updateItemQty, consumeItem, readUsageLog };
