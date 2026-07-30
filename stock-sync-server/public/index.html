@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>คลังวัตถุดิบ — Live Sync</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Work+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap');
+  :root {
+    --bg: #F7F3EA; --surface: #FFFFFF; --ink: #2B2118; --ink-soft: #6B5D4F;
+    --line: #E4DCC9; --coffee: #5B3A24; --coffee-dark: #3E2717;
+    --sage: #7C8B5F; --alert: #B54A2C; --alert-bg: #F6E1D6;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: 'Work Sans', sans-serif; background: var(--bg); color: var(--ink); padding: 28px 20px 60px; }
+  h1 { font-family: 'Fraunces', serif; font-size: 28px; color: var(--coffee-dark); margin: 0 0 4px; }
+  .sub { font-size: 13px; color: var(--ink-soft); margin-bottom: 20px; }
+  .wrap { max-width: 960px; margin: 0 auto; }
+  .loc-switch { display: flex; gap: 4px; background: var(--surface); border: 1px solid var(--line); border-radius: 999px; padding: 3px; width: fit-content; margin-bottom: 18px; }
+  .loc-btn { border: none; background: none; padding: 7px 18px; border-radius: 999px; font-family: 'IBM Plex Mono'; font-size: 13px; font-weight: 600; cursor: pointer; color: var(--ink-soft); }
+  .loc-btn.active { background: var(--coffee); color: #fff; }
+  .status-bar { font-size: 12px; color: var(--ink-soft); margin-bottom: 16px; }
+  .status-bar.error { color: var(--alert); }
+  .section-title { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--coffee-dark); margin: 24px 0 10px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 14px; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 16px; }
+  .card.low { border-color: var(--alert); background: linear-gradient(180deg, var(--alert-bg), var(--surface) 45%); }
+  .code { font-family: 'IBM Plex Mono'; font-size: 11px; color: var(--ink-soft); }
+  .name { font-size: 15px; font-weight: 600; margin: 2px 0 8px; }
+  .qty-row { display: flex; align-items: baseline; gap: 6px; margin-bottom: 10px; }
+  .qty { font-family: 'IBM Plex Mono'; font-size: 24px; font-weight: 600; color: var(--coffee-dark); }
+  .card.low .qty { color: var(--alert); }
+  .unit { font-size: 12px; color: var(--ink-soft); }
+  .controls { display: flex; align-items: center; gap: 6px; }
+  .btn { width: 26px; height: 26px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); cursor: pointer; font-size: 15px; font-weight: 600; color: var(--coffee-dark); }
+  .btn:hover { background: var(--line); }
+  .amt { width: 58px; text-align: center; border: 1px solid var(--line); border-radius: 8px; padding: 5px 2px; font-family: 'IBM Plex Mono'; font-size: 12px; }
+  .btn-set { color: #5F6D46; border-color: var(--sage); }
+  .btn-set:hover { background: var(--sage); color: #fff; }
+  .saving-tag { font-size: 10px; color: var(--sage); margin-top: 6px; visibility: hidden; }
+  .saving-tag.show { visibility: visible; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>คลังวัตถุดิบ</h1>
+    <div class="sub">แก้ตัวเลขที่นี่ = อัปเดตเข้า Google Sheet ทันที (ไม่ต้อง export/sync เอง)</div>
+    <div id="locSwitch" class="loc-switch"></div>
+    <div id="statusBar" class="status-bar">กำลังโหลด…</div>
+    <div id="app"></div>
+  </div>
+
+<script>
+  let CONFIG = null;      // { locations, sections }
+  let STOCK = null;       // { QLD: { B1: 12, ... }, WA: {...}, SA: {...} }
+  let currentLocation = null;
+
+  const statusBar = document.getElementById('statusBar');
+  const locSwitchEl = document.getElementById('locSwitch');
+  const appEl = document.getElementById('app');
+
+  function setStatus(text, isError) {
+    statusBar.textContent = text;
+    statusBar.className = 'status-bar' + (isError ? ' error' : '');
+  }
+
+  async function loadConfig() {
+    const res = await fetch('/api/config');
+    CONFIG = await res.json();
+    currentLocation = CONFIG.locations[0];
+  }
+
+  async function loadStock() {
+    setStatus('กำลังโหลดข้อมูลจากชีต…');
+    const res = await fetch('/api/stock');
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      setStatus('โหลดข้อมูลไม่สำเร็จ: ' + (err.error || res.statusText), true);
+      return;
+    }
+    const data = await res.json();
+    STOCK = data.stock;
+    setStatus('ข้อมูลล่าสุดจาก Google Sheet');
+  }
+
+  async function updateQty(itemId, qty) {
+    const card = document.querySelector(`[data-item="${itemId}"] .saving-tag`);
+    if (card) card.classList.add('show');
+    try {
+      const res = await fetch('/api/stock/update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ location: currentLocation, itemId, qty }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || res.statusText);
+      }
+      STOCK[currentLocation][itemId] = qty;
+      setStatus('บันทึกเข้า Google Sheet แล้ว ✓');
+    } catch (e) {
+      setStatus('บันทึกไม่สำเร็จ: ' + e.message, true);
+    }
+    if (card) card.classList.remove('show');
+    render();
+  }
+
+  window.onAdjust = function (itemId, delta) {
+    const amtInput = document.getElementById('amt-' + itemId);
+    let amt = amtInput ? parseFloat(amtInput.value) : NaN;
+    if (isNaN(amt) || amt <= 0) amt = 1;
+    const current = STOCK[currentLocation][itemId] || 0;
+    const next = Math.max(0, current + delta * amt);
+    updateQty(itemId, next);
+  };
+
+  window.onSetQty = function (itemId) {
+    const amtInput = document.getElementById('amt-' + itemId);
+    const val = amtInput ? parseFloat(amtInput.value) : NaN;
+    if (isNaN(val) || val < 0) { alert('กรุณาใส่จำนวนที่ถูกต้องก่อนกดบันทึก'); return; }
+    updateQty(itemId, val);
+  };
+
+  window.onAmtKeydown = function (itemId, ev) {
+    if (ev.key === 'Enter') { ev.preventDefault(); onSetQty(itemId); }
+  };
+
+  window.switchLocation = function (loc) {
+    currentLocation = loc;
+    render();
+  };
+
+  function render() {
+    locSwitchEl.innerHTML = CONFIG.locations.map(loc =>
+      `<button class="loc-btn ${loc === currentLocation ? 'active' : ''}" onclick="switchLocation('${loc}')">${loc}</button>`
+    ).join('');
+
+    const qtyMap = STOCK[currentLocation] || {};
+    appEl.innerHTML = CONFIG.sections.map(sec => `
+      <div class="section-title">${sec.label}</div>
+      <div class="grid">
+        ${sec.items.map(item => {
+          const qty = qtyMap[item.id] ?? 0;
+          const isLow = qty <= item.par;
+          return `
+            <div class="card ${isLow ? 'low' : ''}" data-item="${item.id}">
+              <div class="code">${item.id}</div>
+              <div class="name">${item.name}</div>
+              <div class="qty-row"><span class="qty">${qty}</span><span class="unit">${item.unit}</span></div>
+              <div class="controls">
+                <button class="btn" onclick="onAdjust('${item.id}', -1)">−</button>
+                <input class="amt" id="amt-${item.id}" type="number" min="0" step="any" placeholder="จำนวน" onkeydown="onAmtKeydown('${item.id}', event)" />
+                <button class="btn" onclick="onAdjust('${item.id}', 1)">+</button>
+                <button class="btn btn-set" onclick="onSetQty('${item.id}')" title="ตั้งยอดคงเหลือเป็นเลขนี้โดยตรง">✓</button>
+              </div>
+              <div class="saving-tag">กำลังบันทึก…</div>
+            </div>
+          `;
+        }).join('')}
+      </div>
+    `).join('');
+  }
+
+  (async function init() {
+    await loadConfig();
+    await loadStock();
+    render();
+  })();
+</script>
+</body>
+</html>
